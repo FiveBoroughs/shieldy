@@ -371,13 +371,13 @@ async function notifyCandidate(
     chat.captchaType !== CaptchaType.BUTTON
       ? Extra.webPreview(false)
       : Extra.webPreview(false).markup(m =>
-          m.inlineKeyboard([
-            m.callbackButton(
-              strings(chat, 'captcha_button'),
-              `${chat.id}~${candidate.id}`
-            ),
-          ])
-        )
+        m.inlineKeyboard([
+          m.callbackButton(
+            strings(chat, 'captcha_button'),
+            `${chat.id}~${candidate.id}`
+          ),
+        ])
+      )
   if (
     chat.customCaptchaMessage &&
     chat.captchaMessage &&
@@ -418,17 +418,17 @@ async function notifyCandidate(
       return ctx.replyWithPhoto({ source: image.png } as any, {
         caption: `[${getUsername(candidate)}](tg://user?id=${
           candidate.id
-        })${warningMessage} (${chat.timeGiven} ${strings(chat, 'seconds')})`,
+          })${warningMessage} (${chat.timeGiven} ${strings(chat, 'seconds')})`,
         parse_mode: 'Markdown',
       })
     } else {
       return ctx.replyWithMarkdown(
         `${
-          chat.captchaType === CaptchaType.DIGITS
-            ? `(${equation.question}) `
-            : ''
+        chat.captchaType === CaptchaType.DIGITS
+          ? `(${equation.question}) `
+          : ''
         }[${getUsername(candidate)}](tg://user?id=${
-          candidate.id
+        candidate.id
         })${warningMessage} (${chat.timeGiven} ${strings(chat, 'seconds')})`,
         extra
       )
@@ -441,23 +441,45 @@ async function greetUser(ctx: ContextMessageUpdate) {
     if (ctx.dbchat.greetsUsers && ctx.dbchat.greetingMessage) {
       const text = ctx.dbchat.greetingMessage.message.text
       let message
-      if (text.includes('$username') || text.includes('$title')) {
-        message = await ctx.telegram.sendMessage(
-          ctx.dbchat.id,
-          text
-            .replace(/\$username/g, getUsername(ctx.from))
-            .replace(/\$title/g, (await ctx.getChat()).title),
-          Extra.webPreview(false) as ExtraReplyMessage
-        )
-      } else {
-        const msg = ctx.dbchat.greetingMessage.message
-        msg.text = `${msg.text}\n\n${getUsername(ctx.from)}`
-        message = await ctx.telegram.sendCopy(
-          ctx.dbchat.id,
-          msg,
-          Extra.webPreview(false) as ExtraReplyMessage
-        )
+      const msg = ctx.dbchat.greetingMessage.message
+      // Replace $title with the the group title if needed
+      if (text.includes('$title')) {
+        const title = (await ctx.getChat()).title
+        const title_tag_offset = msg.text.indexOf('$title')
+
+        msg.text = msg.text.replace(/\$title/g, title)
+
+        msg.entities.forEach(msgEntity => {
+          if (msgEntity.offset > title_tag_offset) {
+            msgEntity.offset = msgEntity.offset - ('$title').length + title.length
+          }
+        })
       }
+      //Replace $username with the @username of the greeted user if needed
+      if (text.includes('$username')) {
+        const username = getUsername(ctx.from)
+        const username_tag_offset = msg.text.indexOf('$username')
+
+        msg.text = msg.text.replace(/\$username/g, username)
+
+        msg.entities.forEach(msgEntity => {
+          if (msgEntity.offset > username_tag_offset) {
+            msgEntity.offset = msgEntity.offset - ('$username').length + username.length
+          }
+        })
+      }
+      // Add the @username of the greeted user at the end of the message if no $username was provided
+      else {
+        msg.text = `${msg.text}\n\n${getUsername(ctx.from)}`
+      }
+
+      // Send the message
+      message = await ctx.telegram.sendCopy(
+        ctx.dbchat.id,
+        msg,
+        Extra.webPreview(false) as ExtraReplyMessage
+      )
+
       // Delete greeting message if requested
       if (ctx.dbchat.deleteGreetingTime && message) {
         setTimeout(async () => {

@@ -23,7 +23,6 @@ import { modifyCandidates } from './candidates'
 import { InstanceType } from 'typegoose'
 import { modifyRestrictedUsers } from './restrictedUsers'
 import { getUsername } from './getUsername'
-import { MongooseDocument } from 'mongoose'
 
 export function setupNewcomers(bot: Telegraf<ContextMessageUpdate>) {
   bot.on('new_chat_members', checkIfGroup, onNewChatMembers)
@@ -456,7 +455,7 @@ async function greetUser(ctx: ContextMessageUpdate) {
           // Replace the tag withe the value
           msg.text = msg.text.replace(tag, tag_value)
 
-          // Update the offset of links if the 
+          // Update the offset of links if it is after the replaced tag
           msg.entities.forEach(msgEntity => {
             if (msgEntity.offset > tag_offset) {
               msgEntity.offset = msgEntity.offset - (tag).length + tag_value.length

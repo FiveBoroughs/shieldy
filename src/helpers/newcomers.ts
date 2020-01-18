@@ -23,6 +23,7 @@ import { modifyCandidates } from './candidates'
 import { InstanceType } from 'typegoose'
 import { modifyRestrictedUsers } from './restrictedUsers'
 import { getUsername } from './getUsername'
+import { MongooseDocument } from 'mongoose'
 
 export function setupNewcomers(bot: Telegraf<ContextMessageUpdate>) {
   bot.on('new_chat_members', checkIfGroup, onNewChatMembers)
@@ -439,42 +440,37 @@ async function notifyCandidate(
 async function greetUser(ctx: ContextMessageUpdate) {
   try {
     if (ctx.dbchat.greetsUsers && ctx.dbchat.greetingMessage) {
-      const text = ctx.dbchat.greetingMessage.message.text
-      let message
-      const msg = ctx.dbchat.greetingMessage.message
-      // Replace $title with the the group title if needed
-      if (text.includes('$title')) {
-        const title = (await ctx.getChat()).title
-        const title_tag_offset = msg.text.indexOf('$title')
-
-        msg.text = msg.text.replace(/\$title/g, title)
-
-        msg.entities.forEach(msgEntity => {
-          if (msgEntity.offset > title_tag_offset) {
-            msgEntity.offset = msgEntity.offset - ('$title').length + title.length
-          }
-        })
+      const tags = {
+        '$title': (await ctx.getChat()).title,
+        '$username': getUsername(ctx.from),
+        '$fullanme': getUsername(ctx.from)
       }
-      //Replace $username with the @username of the greeted user if needed
-      if (text.includes('$username')) {
-        const username = getUsername(ctx.from)
-        const username_tag_offset = msg.text.indexOf('$username')
+      const msg = ctx.dbchat.greetingMessage.message
+      const text = msg.text
+      // For every tag present in the dictionnary, and in the greeting message
+      for (let tag in tags) {
+        if (text.includes(tag)) {
+          const tag_value = tags[tag]
+          const tag_offset = msg.text.indexOf(tag)
 
-        msg.text = msg.text.replace(/\$username/g, username)
+          // Replace the tag withe the value
+          msg.text = msg.text.replace(tag, tag_value)
 
-        msg.entities.forEach(msgEntity => {
-          if (msgEntity.offset > username_tag_offset) {
-            msgEntity.offset = msgEntity.offset - ('$username').length + username.length
-          }
-        })
+          // Update the offset of links if the 
+          msg.entities.forEach(msgEntity => {
+            if (msgEntity.offset > tag_offset) {
+              msgEntity.offset = msgEntity.offset - (tag).length + tag_value.length
+            }
+          })
+        }
       }
       // Add the @username of the greeted user at the end of the message if no $username was provided
-      else {
+      if (!text.includes('$username')) {
         msg.text = `${msg.text}\n\n${getUsername(ctx.from)}`
       }
 
       // Send the message
-      message = await ctx.telegram.sendCopy(
+      let message = await ctx.telegram.sendCopy(
         ctx.dbchat.id,
         msg,
         Extra.webPreview(false) as ExtraReplyMessage

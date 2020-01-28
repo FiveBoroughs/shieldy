@@ -24,16 +24,16 @@ export async function checkNoChannelLinks(
     for await (let entity of entities) {
         let url: string
         if (entity.type == 'url' && message.text)
-            url = message.text.substring(entity.offset, entity.offset + entity.length)
+            url = message.text.substring(entity.offset, entity.offset + entity.length).toLowerCase()
         else if (entity.type == 'url' && message.caption)
-            url = message.caption.substring(entity.offset, entity.offset + entity.length)
+            url = message.caption.substring(entity.offset, entity.offset + entity.length).toLowerCase()
         else if (entity.type == 'text_link' && entity.url)
-            url = entity.url
+            url = entity.url.toLowerCase()
 
         // If the link is a telegram link, mark the message for deletion
         if (url) {
             try {
-                url = url.includes('https://') ? url : url.includes('http://') ? url : 'http://' + url
+                url = (url.includes('https://') || url.includes('http://')) ? url : 'http://' + url
                 let unshortenedUrl = await tall(url);
                 if (unshortenedUrl && (unshortenedUrl.includes('http://t.me/') || unshortenedUrl.includes('https://t.me/')) && (ctx.chat.username && !unshortenedUrl.includes('://t.me/' + ctx.chat.username))) {
                     markedForDeletion = true

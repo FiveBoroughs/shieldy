@@ -29,6 +29,9 @@ import { setupCAS } from './commands/cas'
 import { setupBan } from './commands/ban'
 import { setupUnderAttack } from './commands/underAttack'
 import { noWait } from './middlewares/noWait'
+import { setupNoAttack } from './commands/noAttack'
+import { setupViewConfig } from './commands/viewConfig'
+import { setupButtonText } from './commands/buttonText'
 
 // Make Telegraph async
 bot.use(noWait)
@@ -62,6 +65,9 @@ setupDeleteEntryOnKick(bot)
 setupCAS(bot)
 setupBan(bot)
 setupUnderAttack(bot)
+setupNoAttack(bot)
+setupViewConfig(bot)
+setupButtonText(bot)
 // Newcomers logic
 setupNewcomers(bot)
 

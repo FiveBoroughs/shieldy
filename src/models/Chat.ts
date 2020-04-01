@@ -10,7 +10,6 @@ export enum Language {
   UKRAINIAN = 'uk',
   PORTUGUESE = 'br',
   TURKISH = 'tr',
-  RUSLISH = 'ruen',
   SPANISH = 'es',
   CHINESE = 'zh',
   NORWEGIAN = 'no',
@@ -21,7 +20,6 @@ export enum Language {
   KOREAN = 'ko',
   AMHARIC = 'am',
   CZECH = 'cz',
-  CZECHLISH = 'czen',
   ARABIC = 'ar',
   JAPANESE = 'ja',
   ROMANIAN = 'ro',
@@ -49,6 +47,8 @@ export class Candidate {
   captchaType: CaptchaType
   @prop()
   messageId?: number
+  @prop()
+  username?: string
 
   @prop()
   equation?: Equation
@@ -107,6 +107,10 @@ export class Chat extends Typegoose {
   cas: boolean
   @prop({ required: true, default: false })
   underAttack: boolean
+  @prop({ required: true, default: false })
+  noAttack: boolean
+  @prop()
+  buttonText?: string
 }
 
 // Get Chat model

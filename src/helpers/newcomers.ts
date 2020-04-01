@@ -24,12 +24,19 @@ import { InstanceType } from 'typegoose'
 import { modifyRestrictedUsers } from './restrictedUsers'
 import { getUsername, getName } from './getUsername'
 
+const kickedIds = {} as { [index: number]: number[] }
+
 export function setupNewcomers(bot: Telegraf<ContextMessageUpdate>) {
   bot.on('new_chat_members', checkIfGroup, onNewChatMembers)
   // Check left messages
   bot.on('left_chat_member', async ctx => {
     // Delete left message if required
-    if (ctx.dbchat.deleteEntryMessages || ctx.dbchat.underAttack) {
+    if (
+      ctx.dbchat.deleteEntryMessages ||
+      ctx.dbchat.underAttack ||
+      (ctx.dbchat.deleteEntryOnKick &&
+        kickedIds[ctx.dbchat.id].includes(ctx.message.left_chat_member.id))
+    ) {
       try {
         await ctx.deleteMessage()
       } catch (err) {
@@ -160,8 +167,20 @@ async function onNewChatMembers(ctx: ContextMessageUpdate) {
   const memberIds = ctx.message.new_chat_members.map(m => m.id)
   // Add to globaly restricted list
   await modifyGloballyRestricted(true, memberIds)
+  // Check if needs to delete message right away
+  if (ctx.dbchat.deleteEntryMessages || ctx.dbchat.underAttack) {
+    try {
+      await ctx.deleteMessage()
+    } catch {
+      // Do nothing
+    }
+  }
   // Start the newcomers logic
   try {
+    // Check if no attack mode
+    if (ctx.dbchat.noAttack) {
+      return
+    }
     // Get admin ids
     const adminIds = (await ctx.getChatAdministrators()).map(u => u.user.id)
     // If an admin adds the members, do nothing
@@ -192,15 +211,17 @@ async function onNewChatMembers(ctx: ContextMessageUpdate) {
       // Check if under attack
       if (ctx.dbchat.underAttack) {
         await kickChatMember(ctx.dbchat, member)
-        try {
-          await ctx.deleteMessage()
-        } catch (err) {
-          await report(err)
-        }
         continue
       }
       // Check if CAS banned
       if (!(await checkCAS(member.id))) {
+        if (ctx.dbchat.deleteEntryOnKick) {
+          try {
+            await ctx.deleteMessage()
+          } catch {
+            // Do nothing
+          }
+        }
         await kickChatMember(ctx.dbchat, member)
         continue
       }
@@ -226,14 +247,6 @@ async function onNewChatMembers(ctx: ContextMessageUpdate) {
     await modifyCandidates(ctx.dbchat, true, candidatesToAdd)
     // Restrict candidates if required
     await modifyRestrictedUsers(ctx.dbchat, true, candidatesToAdd)
-    // Delete entry message if required
-    if (ctx.dbchat.deleteEntryMessages) {
-      try {
-        await ctx.deleteMessage()
-      } catch (err) {
-        await report(err)
-      }
-    }
   } catch (err) {
     console.error('onNewChatMembers', err)
   } finally {
@@ -245,6 +258,7 @@ async function onNewChatMembers(ctx: ContextMessageUpdate) {
 async function kickChatMember(chat: InstanceType<Chat>, user: User) {
   // Try kicking the member
   try {
+    addKickedUser(chat, user.id)
     await bot.telegram.kickChatMember(
       chat.id,
       user.id,
@@ -267,6 +281,7 @@ async function kickCandidates(
   for (const candidate of candidates) {
     // Try kicking the candidate
     try {
+      addKickedUser(chat, candidate.id)
       await bot.telegram.kickChatMember(
         chat.id,
         candidate.id,
@@ -356,6 +371,7 @@ function getCandidate(
     entryChatId: ctx.chat.id,
     entryMessageId: ctx.message.message_id,
     imageText: image ? image.text : undefined,
+    username: user.username,
   }
 }
 
@@ -371,13 +387,14 @@ async function notifyCandidate(
     chat.captchaType !== CaptchaType.BUTTON
       ? Extra.webPreview(false)
       : Extra.webPreview(false).markup(m =>
-        m.inlineKeyboard([
-          m.callbackButton(
-            strings(chat, 'captcha_button'),
-            `${chat.id}~${candidate.id}`
-          ),
-        ])
-      )
+          m.inlineKeyboard([
+            m.callbackButton(
+              chat.buttonText || strings(chat, 'captcha_button'),
+              `${chat.id}~${candidate.id}`
+            ),
+          ])
+        )
+  ;(extra as any).parse_mode = 'HTML'
   if (
     chat.customCaptchaMessage &&
     chat.captchaMessage &&
@@ -401,7 +418,7 @@ async function notifyCandidate(
       if (image) {
         return ctx.replyWithPhoto({ source: image.png } as any, {
           caption: textToSend,
-          parse_mode: 'Markdown',
+          parse_mode: 'HTML',
         })
       } else {
         return ctx.telegram.sendMessage(
@@ -418,20 +435,26 @@ async function notifyCandidate(
   } else {
     if (image) {
       return ctx.replyWithPhoto({ source: image.png } as any, {
-        caption: `[${getUsername(candidate)}](tg://user?id=${
-          candidate.id
-          })${warningMessage} (${chat.timeGiven} ${strings(chat, 'seconds')})`,
-        parse_mode: 'Markdown',
+        caption: `<a href="tg://user?id=${candidate.id}">${getUsername(
+          candidate
+        )}</a>${warningMessage} (${chat.timeGiven} ${strings(
+          chat,
+          'seconds'
+        )})`,
+        parse_mode: 'HTML',
       })
     } else {
       return ctx.replyWithMarkdown(
         `${
-        chat.captchaType === CaptchaType.DIGITS
-          ? `(${equation.question}) `
-          : ''
-        }[${getUsername(candidate)}](tg://user?id=${
-        candidate.id
-        })${warningMessage} (${chat.timeGiven} ${strings(chat, 'seconds')})`,
+          chat.captchaType === CaptchaType.DIGITS
+            ? `(${equation.question}) `
+            : ''
+        }<a href="tg://user?id=${candidate.id}">${getUsername(
+          candidate
+        )}</a>${warningMessage} (${chat.timeGiven} ${strings(
+          chat,
+          'seconds'
+        )})`,
         extra
       )
     }
@@ -442,32 +465,42 @@ async function greetUser(ctx: ContextMessageUpdate) {
   try {
     if (ctx.dbchat.greetsUsers && ctx.dbchat.greetingMessage) {
       const message = ctx.dbchat.greetingMessage.message
-      const originalText = message.text
-      const tags = {
-        '$title': (await ctx.getChat()).title,
-        '$username': getUsername(ctx.from),
-        '$fullname': getName(ctx.from)
-      }
+      let originalText = message.text
+      const needsUsername = !originalText.includes('$username')
 
-      // For every tag present in the dictionnary, and in the greeting message
-      for (let tag in tags) {
-        if (originalText.includes(tag)) {
-          const tag_value = tags[tag]
-          const tag_offset = message.text.indexOf(tag)
+      if (
+        originalText.includes('$title') ||
+        originalText.includes('$username') ||
+        originalText.includes('$fullname')
+      ) {
+        const tags = {
+          $title: (await ctx.getChat()).title,
+          $username: getUsername(ctx.from),
+          $fullname: getName(ctx.from),
+        }
+        for (const tag in tags) {
+          while (originalText.includes(tag)) {
+            const tag_value = tags[tag]
+            const tag_offset = originalText.indexOf(tag)
 
-          // Replace the tag withe the value in the message
-          message.text = message.text.replace(tag, tag_value)
+            // Replace the tag withe the value in the message
+            originalText = originalText.replace(tag, tag_value)
 
-          // Update the offset of links if it is after the replaced tag
-          message.entities.forEach(msgEntity => {
-            if (msgEntity.offset > tag_offset) {
-              msgEntity.offset = msgEntity.offset - (tag).length + tag_value.length
+            // Update the offset of links if it is after the replaced tag
+            if (message.entities && message.entities.length) {
+              message.entities.forEach(msgEntity => {
+                if (msgEntity.offset > tag_offset) {
+                  msgEntity.offset =
+                    msgEntity.offset - tag.length + tag_value.length
+                }
+              })
             }
-          })
+          }
         }
       }
+      message.text = originalText
       // Add the @username of the greeted user at the end of the message if no $username was provided
-      if (!originalText.includes('$username')) {
+      if (needsUsername) {
         message.text = `${message.text}\n\n${getUsername(ctx.from)}`
       }
 
@@ -477,7 +510,6 @@ async function greetUser(ctx: ContextMessageUpdate) {
         message,
         Extra.webPreview(false) as ExtraReplyMessage
       )
-
 
       // Delete greeting message if requested
       if (ctx.dbchat.deleteGreetingTime && messageSent) {
@@ -544,5 +576,20 @@ async function check() {
     report(err, 'checking candidates')
   } finally {
     checking = false
+  }
+}
+
+function addKickedUser(chat: Chat, urerId: number) {
+  if (!chat.deleteEntryOnKick) {
+    return
+  }
+  try {
+    if (kickedIds[chat.id]) {
+      kickedIds[chat.id].push(urerId)
+    } else {
+      kickedIds[chat.id] = [urerId]
+    }
+  } catch (err) {
+    // Do nothing
   }
 }

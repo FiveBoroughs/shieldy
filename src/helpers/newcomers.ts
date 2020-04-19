@@ -23,13 +23,16 @@ import { modifyCandidates } from './candidates'
 import { InstanceType } from 'typegoose'
 import { modifyRestrictedUsers } from './restrictedUsers'
 import { getUsername, getName } from './getUsername'
+import { cloneDeep } from 'lodash'
+import { checkSuperAdmin } from '../middlewares/checkSuperAdmin'
 
 const kickedIds = {} as { [index: number]: number[] }
 
 export function setupNewcomers(bot: Telegraf<ContextMessageUpdate>) {
+  bot.command('greetMe', checkSuperAdmin, greetUser)
   bot.on('new_chat_members', checkIfGroup, onNewChatMembers)
   // Check left messages
-  bot.on('left_chat_member', async ctx => {
+  bot.on('left_chat_member', async (ctx) => {
     // Delete left message if required
     if (
       ctx.dbchat.deleteEntryMessages ||
@@ -51,7 +54,7 @@ export function setupNewcomers(bot: Telegraf<ContextMessageUpdate>) {
       !ctx.message ||
       !ctx.message.text ||
       !ctx.dbchat.candidates.length ||
-      !ctx.dbchat.candidates.map(c => c.id).includes(ctx.from.id)
+      !ctx.dbchat.candidates.map((c) => c.id).includes(ctx.from.id)
     ) {
       return next()
     }
@@ -70,7 +73,7 @@ export function setupNewcomers(bot: Telegraf<ContextMessageUpdate>) {
     }
     // Get candidate
     const candidate = ctx.dbchat.candidates
-      .filter(c => c.id === ctx.from.id)
+      .filter((c) => c.id === ctx.from.id)
       .pop()
     // Check if it is digits captcha
     if (candidate.captchaType === CaptchaType.DIGITS) {
@@ -130,7 +133,7 @@ export function setupNewcomers(bot: Telegraf<ContextMessageUpdate>) {
     return next()
   })
   // Check button
-  bot.action(/\d+~\d+/, async ctx => {
+  bot.action(/\d+~\d+/, async (ctx) => {
     // Get user id and chat id
     const params = ctx.callbackQuery.data.split('~')
     const userId = parseInt(params[1])
@@ -144,11 +147,11 @@ export function setupNewcomers(bot: Telegraf<ContextMessageUpdate>) {
       return
     }
     // Check if this user is within candidates
-    if (!ctx.dbchat.candidates.map(c => c.id).includes(userId)) {
+    if (!ctx.dbchat.candidates.map((c) => c.id).includes(userId)) {
       return
     }
     // Get the candidate
-    const candidate = ctx.dbchat.candidates.filter(c => c.id === userId).pop()
+    const candidate = ctx.dbchat.candidates.filter((c) => c.id === userId).pop()
     // Remove candidate from the chat
     await modifyCandidates(ctx.dbchat, false, [candidate])
     // Delete the captcha message
@@ -164,7 +167,7 @@ export function setupNewcomers(bot: Telegraf<ContextMessageUpdate>) {
 
 async function onNewChatMembers(ctx: ContextMessageUpdate) {
   // Get list of ids
-  const memberIds = ctx.message.new_chat_members.map(m => m.id)
+  const memberIds = ctx.message.new_chat_members.map((m) => m.id)
   // Add to globaly restricted list
   await modifyGloballyRestricted(true, memberIds)
   // Check if needs to delete message right away
@@ -182,15 +185,15 @@ async function onNewChatMembers(ctx: ContextMessageUpdate) {
       return
     }
     // Get admin ids
-    const adminIds = (await ctx.getChatAdministrators()).map(u => u.user.id)
+    const adminIds = (await ctx.getChatAdministrators()).map((u) => u.user.id)
     // If an admin adds the members, do nothing
     if (adminIds.includes(ctx.message.from.id)) {
       return
     }
     // Send help message if added this bot to the group
     const addedUsernames = ctx.message.new_chat_members
-      .map(member => member.username)
-      .filter(username => !!username)
+      .map((member) => member.username)
+      .filter((username) => !!username)
     if (addedUsernames.includes(bot.options.username)) {
       try {
         await sendHelp(ctx)
@@ -200,8 +203,16 @@ async function onNewChatMembers(ctx: ContextMessageUpdate) {
     }
     // Filter new members
     const membersToCheck = ctx.message.new_chat_members.filter(
-      m => !adminIds.includes(m.id) && !m.is_bot
+      (m) => !adminIds.includes(m.id) && !m.is_bot
     )
+    // Kick bots if required
+    if (!ctx.dbchat.allowInvitingBots) {
+      ctx.message.new_chat_members
+        .filter((m) => m.is_bot)
+        .forEach((m) => {
+          kickChatMember(ctx.dbchat, m)
+        })
+    }
     // Placeholder to add all candidates in batch
     const candidatesToAdd = [] as Candidate[]
     // Loop through the members
@@ -224,6 +235,25 @@ async function onNewChatMembers(ctx: ContextMessageUpdate) {
         }
         await kickChatMember(ctx.dbchat, member)
         continue
+      }
+      // Check if the person who added is a candidate and the chat is in restrict mode
+      if (ctx.dbchat.restrict) {
+        const candidatesIds = ctx.dbchat.candidates.map((c) => c.id)
+        const restrictedIds = ctx.dbchat.restrictedUsers.map((c) => c.id)
+        if (
+          candidatesIds.includes(ctx.message.from.id) ||
+          restrictedIds.includes(ctx.message.from.id)
+        ) {
+          if (ctx.dbchat.deleteEntryOnKick) {
+            try {
+              await ctx.deleteMessage()
+            } catch {
+              // Do nothing
+            }
+          }
+          await kickChatMember(ctx.dbchat, member)
+          continue
+        }
       }
       // Generate captcha if required
       const { equation, image } = await generateEquationOrImage(ctx.dbchat)
@@ -282,7 +312,7 @@ async function kickCandidates(
     // Try kicking the candidate
     try {
       addKickedUser(chat, candidate.id)
-      await bot.telegram.kickChatMember(
+      kickChatMemberProxy(
         chat.id,
         candidate.id,
         chat.banUsers ? 0 : parseInt(`${new Date().getTime() / 1000 + 45}`)
@@ -292,14 +322,7 @@ async function kickCandidates(
     }
     // Try deleting their entry messages
     if (chat.deleteEntryOnKick) {
-      try {
-        await bot.telegram.deleteMessage(
-          candidate.entryChatId,
-          candidate.entryMessageId
-        )
-      } catch (err) {
-        // do nothing
-      }
+      deleteMessageProxy(candidate.entryChatId, candidate.entryMessageId)
     }
     // Try deleting the captcha message
     try {
@@ -312,6 +335,26 @@ async function kickCandidates(
   await modifyCandidates(chat, false, candidates)
   // Remove from restricted
   await modifyRestrictedUsers(chat, false, candidates)
+}
+
+async function kickChatMemberProxy(
+  id: number,
+  candidateId: number,
+  duration: number
+) {
+  try {
+    await bot.telegram.kickChatMember(id, candidateId, duration)
+  } catch (err) {
+    report(err)
+  }
+}
+
+async function deleteMessageProxy(id, messageId) {
+  try {
+    await bot.telegram.deleteMessage(id, messageId)
+  } catch (err) {
+    // do nothing
+  }
 }
 
 async function restrictChatMember(chat: InstanceType<Chat>, user: User) {
@@ -382,11 +425,14 @@ async function notifyCandidate(
   image?: { png: Buffer; text: string }
 ) {
   const chat = ctx.dbchat
+  const captchaMessage = ctx.dbchat.captchaMessage
+    ? cloneDeep(ctx.dbchat.captchaMessage)
+    : undefined
   const warningMessage = strings(chat, `${chat.captchaType}_warning`)
   const extra =
     chat.captchaType !== CaptchaType.BUTTON
       ? Extra.webPreview(false)
-      : Extra.webPreview(false).markup(m =>
+      : Extra.webPreview(false).markup((m) =>
           m.inlineKeyboard([
             m.callbackButton(
               chat.buttonText || strings(chat, 'captcha_button'),
@@ -397,11 +443,11 @@ async function notifyCandidate(
   ;(extra as any).parse_mode = 'HTML'
   if (
     chat.customCaptchaMessage &&
-    chat.captchaMessage &&
+    captchaMessage &&
     (chat.captchaType !== CaptchaType.DIGITS ||
-      chat.captchaMessage.message.text.includes('$equation'))
+      captchaMessage.message.text.includes('$equation'))
   ) {
-    const text = chat.captchaMessage.message.text
+    const text = captchaMessage.message.text
     if (
       text.includes('$username') ||
       text.includes('$title') ||
@@ -410,8 +456,8 @@ async function notifyCandidate(
       text.includes('$fullname')
     ) {
       const textToSend = text
-        .replace(/\$username/g, getUsername(candidate))
-        .replace(/\$fullname/g, getName(candidate))
+        .replace(/\$username/g, getUsername(candidate, true))
+        .replace(/\$fullname/g, getName(candidate, true))
         .replace(/\$title/g, (await ctx.getChat()).title)
         .replace(/\$equation/g, equation ? (equation.question as string) : '')
         .replace(/\$seconds/g, `${chat.timeGiven}`)
@@ -428,9 +474,24 @@ async function notifyCandidate(
         )
       }
     } else {
-      const message = chat.captchaMessage.message
+      const message = cloneDeep(captchaMessage.message)
       message.text = `${getUsername(candidate)}\n\n${message.text}`
-      return ctx.telegram.sendCopy(chat.id, message, extra as ExtraReplyMessage)
+      try {
+        const sentMessage = await ctx.telegram.sendCopy(
+          chat.id,
+          message,
+          extra as ExtraReplyMessage
+        )
+        return sentMessage
+      } catch (err) {
+        message.entities = []
+        const sentMessage = await ctx.telegram.sendCopy(
+          chat.id,
+          message,
+          extra as ExtraReplyMessage
+        )
+        return sentMessage
+      }
     }
   } else {
     if (image) {
@@ -464,7 +525,7 @@ async function notifyCandidate(
 async function greetUser(ctx: ContextMessageUpdate) {
   try {
     if (ctx.dbchat.greetsUsers && ctx.dbchat.greetingMessage) {
-      const message = ctx.dbchat.greetingMessage.message
+      const message = cloneDeep(ctx.dbchat.greetingMessage.message)
       let originalText = message.text
       const needsUsername = !originalText.includes('$username')
 
@@ -483,12 +544,12 @@ async function greetUser(ctx: ContextMessageUpdate) {
             const tag_value = tags[tag]
             const tag_offset = originalText.indexOf(tag)
 
-            // Replace the tag withe the value in the message
+            // Replace the tag with the value in the message
             originalText = originalText.replace(tag, tag_value)
 
             // Update the offset of links if it is after the replaced tag
             if (message.entities && message.entities.length) {
-              message.entities.forEach(msgEntity => {
+              message.entities.forEach((msgEntity) => {
                 if (msgEntity.offset > tag_offset) {
                   msgEntity.offset =
                     msgEntity.offset - tag.length + tag_value.length
@@ -503,13 +564,46 @@ async function greetUser(ctx: ContextMessageUpdate) {
       if (needsUsername) {
         message.text = `${message.text}\n\n${getUsername(ctx.from)}`
       }
-
       // Send the message
-      let messageSent = await ctx.telegram.sendCopy(
-        ctx.dbchat.id,
-        message,
-        Extra.webPreview(false) as ExtraReplyMessage
-      )
+      let messageSent: Message
+      try {
+        messageSent = await ctx.telegram.sendCopy(
+          ctx.dbchat.id,
+          message,
+          ctx.dbchat.greetingButtons
+            ? Extra.webPreview(false).markup((m) =>
+                m.inlineKeyboard(
+                  ctx.dbchat.greetingButtons
+                    .split('\n')
+                    .map((s) => {
+                      const components = s.split(' - ')
+                      return m.urlButton(components[0], components[1])
+                    })
+                    .map((v) => [v])
+                )
+              )
+            : Extra.webPreview(false)
+        )
+      } catch (err) {
+        message.entities = []
+        messageSent = await ctx.telegram.sendCopy(
+          ctx.dbchat.id,
+          message,
+          ctx.dbchat.greetingButtons
+            ? Extra.webPreview(false).markup((m) =>
+                m.inlineKeyboard(
+                  ctx.dbchat.greetingButtons
+                    .split('\n')
+                    .map((s) => {
+                      const components = s.split(' - ')
+                      return m.urlButton(components[0], components[1])
+                    })
+                    .map((v) => [v])
+                )
+              )
+            : Extra.webPreview(false)
+        )
+      }
 
       // Delete greeting message if requested
       if (ctx.dbchat.deleteGreetingTime && messageSent) {
@@ -542,6 +636,7 @@ async function check() {
   checking = true
   try {
     const chats = await findChatsWithCandidates()
+    console.log(`Found ${chats.length} chats with candidates`)
     for (const chat of chats) {
       // Check candidates
       const candidatesToDelete = []
@@ -553,6 +648,11 @@ async function check() {
           continue
         }
         candidatesToDelete.push(candidate)
+      }
+      if (candidatesToDelete.length) {
+        console.log(
+          `Kicking ${candidatesToDelete.length} candidates at ${chat.id}`
+        )
       }
       try {
         await kickCandidates(chat, candidatesToDelete)
@@ -575,6 +675,7 @@ async function check() {
   } catch (err) {
     report(err, 'checking candidates')
   } finally {
+    console.log('Finished checking chats with candidates')
     checking = false
   }
 }

@@ -111,10 +111,14 @@ export class Chat extends Typegoose {
   noAttack: boolean
   @prop()
   buttonText?: string
+  @prop({ required: true, default: false })
+  allowInvitingBots: boolean
+  @prop()
+  greetingButtons?: string
 }
 
 // Get Chat model
-const ChatModel = new Chat().getModelForClass(Chat, {
+export const ChatModel = new Chat().getModelForClass(Chat, {
   schemaOptions: { timestamps: true },
 })
 

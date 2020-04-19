@@ -32,6 +32,9 @@ import { noWait } from './middlewares/noWait'
 import { setupNoAttack } from './commands/noAttack'
 import { setupViewConfig } from './commands/viewConfig'
 import { setupButtonText } from './commands/buttonText'
+import { setupAllowInvitingBots } from './commands/allowInvitingBots'
+import { setupDelete } from './commands/delete'
+import { setupGreetingButtons } from './commands/greetingButtons'
 
 // Make Telegraph async
 bot.use(noWait)
@@ -68,6 +71,9 @@ setupUnderAttack(bot)
 setupNoAttack(bot)
 setupViewConfig(bot)
 setupButtonText(bot)
+setupAllowInvitingBots(bot)
+setupDelete(bot)
+setupGreetingButtons(bot)
 // Newcomers logic
 setupNewcomers(bot)
 

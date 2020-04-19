@@ -13,15 +13,15 @@ export async function modifyCandidates(
   try {
     if (add) {
       // Only add candidates
-      const candidatesIds = chat.candidates.map(c => c.id)
+      const candidatesIds = chat.candidates.map((c) => c.id)
       for (const candidate of candidatesAndUsers) {
         if (!candidatesIds.includes(candidate.id)) {
           chat.candidates.push(candidate as Candidate)
         }
       }
     } else {
-      const ids = candidatesAndUsers.map(v => v.id)
-      chat.candidates = chat.candidates.filter(c => !ids.includes(c.id))
+      const ids = candidatesAndUsers.map((v) => v.id)
+      chat.candidates = chat.candidates.filter((c) => !ids.includes(c.id))
     }
     await chat.save()
   } catch (err) {

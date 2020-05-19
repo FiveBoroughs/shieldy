@@ -6,9 +6,10 @@ export async function getImageCaptcha() {
   const catpcha = create({
     size: 6,
     ignoreChars: letters + letters.toUpperCase(),
-    noise: 2,
+    noise: 10,
     width: 150,
     height: 100,
+    color: true
   })
   return {
     png: await convert(catpcha.data, {

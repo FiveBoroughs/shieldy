@@ -22,11 +22,12 @@ import { sendHelp } from '../commands/help'
 import { modifyCandidates } from './candidates'
 import { InstanceType } from 'typegoose'
 import { modifyRestrictedUsers } from './restrictedUsers'
-import { getUsername, getName } from './getUsername'
+import { getUsername, getName, getLink } from './getUsername'
 import { cloneDeep } from 'lodash'
 import { checkSuperAdmin } from '../middlewares/checkSuperAdmin'
 
 const kickedIds = {} as { [index: number]: number[] }
+const buttonPresses = {} as { [index: string]: boolean }
 
 export function setupNewcomers(bot: Telegraf<ContextMessageUpdate>) {
   bot.command('greetMe', checkSuperAdmin, greetUser)
@@ -134,34 +135,46 @@ export function setupNewcomers(bot: Telegraf<ContextMessageUpdate>) {
   })
   // Check button
   bot.action(/\d+~\d+/, async (ctx) => {
-    // Get user id and chat id
-    const params = ctx.callbackQuery.data.split('~')
-    const userId = parseInt(params[1])
-    // Check if button is pressed by the candidate
-    if (userId !== ctx.from.id) {
+    if (buttonPresses[ctx.callbackQuery.data]) {
+      return
+    }
+    buttonPresses[ctx.callbackQuery.data] = true
+    try {
+      // Get user id and chat id
+      const params = ctx.callbackQuery.data.split('~')
+      const userId = parseInt(params[1])
+      // Check if button is pressed by the candidate
+      if (userId !== ctx.from.id) {
+        try {
+          await ctx.answerCbQuery(
+            strings(ctx.dbchat, 'only_candidate_can_reply')
+          )
+        } catch (err) {
+          await report(err)
+        }
+        return
+      }
+      // Check if this user is within candidates
+      if (!ctx.dbchat.candidates.map((c) => c.id).includes(userId)) {
+        return
+      }
+      // Get the candidate
+      const candidate = ctx.dbchat.candidates
+        .filter((c) => c.id === userId)
+        .pop()
+      // Remove candidate from the chat
+      await modifyCandidates(ctx.dbchat, false, [candidate])
+      // Delete the captcha message
       try {
-        await ctx.answerCbQuery(strings(ctx.dbchat, 'only_candidate_can_reply'))
+        await ctx.telegram.deleteMessage(ctx.chat!.id, candidate.messageId)
       } catch (err) {
         await report(err)
       }
-      return
+      // Greet the user
+      await greetUser(ctx)
+    } finally {
+      buttonPresses[ctx.callbackQuery.data] = undefined
     }
-    // Check if this user is within candidates
-    if (!ctx.dbchat.candidates.map((c) => c.id).includes(userId)) {
-      return
-    }
-    // Get the candidate
-    const candidate = ctx.dbchat.candidates.filter((c) => c.id === userId).pop()
-    // Remove candidate from the chat
-    await modifyCandidates(ctx.dbchat, false, [candidate])
-    // Delete the captcha message
-    try {
-      await ctx.telegram.deleteMessage(ctx.chat!.id, candidate.messageId)
-    } catch (err) {
-      await report(err)
-    }
-    // Greet the user
-    await greetUser(ctx)
   })
 }
 
@@ -236,24 +249,9 @@ async function onNewChatMembers(ctx: ContextMessageUpdate) {
         await kickChatMember(ctx.dbchat, member)
         continue
       }
-      // Check if the person who added is a candidate and the chat is in restrict mode
-      if (ctx.dbchat.restrict) {
-        const candidatesIds = ctx.dbchat.candidates.map((c) => c.id)
-        const restrictedIds = ctx.dbchat.restrictedUsers.map((c) => c.id)
-        if (
-          candidatesIds.includes(ctx.message.from.id) ||
-          restrictedIds.includes(ctx.message.from.id)
-        ) {
-          if (ctx.dbchat.deleteEntryOnKick) {
-            try {
-              await ctx.deleteMessage()
-            } catch {
-              // Do nothing
-            }
-          }
-          await kickChatMember(ctx.dbchat, member)
-          continue
-        }
+      // Check if already a candidate
+      if (ctx.dbchat.candidates.map((c) => c.id).includes(member.id)) {
+        continue
       }
       // Generate captcha if required
       const { equation, image } = await generateEquationOrImage(ctx.dbchat)
@@ -527,7 +525,9 @@ async function greetUser(ctx: ContextMessageUpdate) {
     if (ctx.dbchat.greetsUsers && ctx.dbchat.greetingMessage) {
       const message = cloneDeep(ctx.dbchat.greetingMessage.message)
       let originalText = message.text
-      const needsUsername = !originalText.includes('$username')
+      const needsUsername =
+        !originalText.includes('$username') &&
+        !originalText.includes('$fullname')
 
       if (
         originalText.includes('$title') ||
@@ -556,13 +556,36 @@ async function greetUser(ctx: ContextMessageUpdate) {
                 }
               })
             }
+            if (tag === '$username' || tag === '$fullname') {
+              if (!message.entities) {
+                message.entities = []
+              }
+              message.entities.push({
+                type: 'text_link',
+                offset: tag_offset,
+                length: tag_value.length,
+                url: getLink(ctx.from),
+              })
+            }
+            console.log(message.entities)
           }
         }
       }
       message.text = originalText
       // Add the @username of the greeted user at the end of the message if no $username was provided
       if (needsUsername) {
-        message.text = `${message.text}\n\n${getUsername(ctx.from)}`
+        const username = getUsername(ctx.from)
+        const initialLength = `${message.text}\n\n`.length
+        message.text = `${message.text}\n\n${username}`
+        if (!message.entities) {
+          message.entities = []
+        }
+        message.entities.push({
+          type: 'text_link',
+          offset: initialLength,
+          length: username.length,
+          url: getLink(ctx.from),
+        })
       }
       // Send the message
       let messageSent: Message
